@@ -1,0 +1,128 @@
+---
+title: "Practical Machine Learning Assignment: Predicting the type of weightlifting technique with accelerometer data"
+author: "Kamerligh"
+date: "June 21, 2015"
+output: html_document
+---
+###Summary
+
+A random forest classification model was applied to the problem of predicting the weightlifting techniques used by six participants with data from accelerometers on their belt, forearm, arm, and dumbell. A three-fold cross validated model was built using only 10% of the available training data, and it achieved an estimated 97% out of sample accuracy.
+
+###Getting and Cleaning the Data
+
+The training and testing data sets are available online at [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har).
+
+```{r, echo=FALSE, results='hide', cache=TRUE}
+#Load training and testing csv files into R.
+training <- read.csv("pml-training.csv", na.strings=c("NA","","#DIV/0!"))
+testing <- read.csv("pml-testing.csv", na.strings=c("NA","","#DIV/0!"))
+
+#Remove 'bookkeeping' columns.
+training <- training[,c(-1:-7)]
+
+#Remove columns with little or no numeric data:
+#Columns with >97% NAs were removed.
+missing <- list()
+for(i in 1:153){
+    if(sum(sapply(training[,i],is.na))/19622 > 0.97){
+        missing <- c(missing,-i)
+    }
+}
+training <- training[,as.numeric(missing)]
+dim(training) #19622 53
+```
+
+There were initially 160 columns and 19622 data entries in the training dataset. The "classe" variable has five categories labeled by letter, and the goal of this model is to predict ```classe``` using the data available for the other predictors. Seven of the columns were removed because they represent time stamps and other 'bookkeeping', and an additional 100 columns were removed because greater than 97% of the entries were missing. The final training set had 52 predictors in addition to the ```classe``` column.
+
+###Building the Model
+
+A random forest model was built on the training data using the ```caret``` package. In a random forest, the samples are selected by a bootstrap method, and at each split, the variables available are also bootstrapped. I selected this type of model because it is known for its high accuracy, which is important for classifying the testing data. A random forest would be a poor model choice if the interpretability of the model were important; for example, a random forest model will not give us a good idea of the biomechanics leading to poor weightlifting form.
+
+Because of the slow speed of growing a random forest, the first model was a random forest built using only 1% of the training data available, which were selected at random, but the accuracy was only around 80% for each class.
+
+```{r, echo=FALSE, cache=TRUE, results='hide', message=FALSE, warning=FALSE}
+library(caret)
+library(ggplot2)
+set.seed(100)
+inTrain <- createDataPartition(training$classe, p=0.01, list=FALSE)
+toy <- training[inTrain,]
+toy.test <- training[-inTrain,]
+toymodel <- train(classe ~ ., data=toy, method="rf")
+pred <- predict(toymodel, toy.test)
+confusionMatrix(toy.test$classe, pred)
+#reported 'Balanced Accuracy': 0.8377 0.8231 0.7477 0.7800 0.8638
+```
+
+```{r, echo=FALSE, cache=TRUE}
+table(pred, toy.test$classe)
+```
+
+A larger random forest model was created to increase the accuracy of the prediction, but, to limit the memory used, only the most important variables in the 1% model were applied. Using only variables that had a greater than 20% effect left 12 predictor variables. This second model was applied to the data on which it was trained to determine the in-sample error rate. The confusion matrix suggests that the in-sample accuracy is 100%, which suggests overfitting.
+
+```{r, echo=FALSE, cache=TRUE, results='hide'}
+toyimp <- varImp(toymodel)$importance
+keep <- toyimp>20
+second <- training[,keep]
+
+set.seed(100)
+inTrain <- createDataPartition(y=second$classe, p=0.1, list=FALSE)
+second.training <- second[inTrain,]
+dim(second.training) #1964 53
+second.testing <- second[-inTrain,]
+
+second.fit <- train(classe ~ .,data=second.training,method='rf')
+```
+
+
+```{r, cache=TRUE, echo=FALSE, results='hide'}
+pred <- predict(second.fit, second.training)
+confusionMatrix(second.training$classe, pred)
+#Balanced Accuracy: 1.0000   1.0000   1.0000    1.000   1.0000
+```
+
+```{r, cache=TRUE, echo=FALSE}
+table(pred,second.training$classe)
+```
+
+Then, it was applied to the remaining testing data to determine the out-of-sample error rate. The confusion matrix suggests that the second model has an overall out-of-sample accuracy of 95%, which is lower than the in-sample accuracy, as expected. It is at the level where 1 in 20 tests would be expected to fail, and the final testing set has 20 samples, so below I attempt to increase the accuracy further.
+
+```{r, cache=TRUE, echo=FALSE, results='hide'}
+pred <- predict(second.fit, second.testing)
+confusionMatrix(second.testing$classe, pred)
+#Balanced Accuracy: 0.9616   0.9398   0.8974   0.9483   0.9853
+```
+
+```{r, cache=TRUE, echo=FALSE} 
+table(pred,second.testing$classe)
+```
+
+###Accuracy with Cross Validation on a Larger Model
+
+Initially, three-fold cross-validation was used on a slightly larger training dataset (20% of the total training data available) to check for an improvement in the accuracy. (The full dataset was initially attempted, but the processing time was prohibitive.) The accuracy was not improved, however, so instead, three-fold cross validation was used on a 10% training set with all of the predictors.
+
+```{r, cache=TRUE, echo=FALSE, results='hide'}
+set.seed(100)
+inTrain <- createDataPartition(y=training$classe, p=0.10, list=FALSE)
+final.training <- training[inTrain,]
+dim(final.training)
+final.testing <- training[-inTrain,]
+
+Features.CVparam <- trainControl(method="repeatedcv",number=3,repeats=1)
+
+#mtry for the final model in the models above was 2.
+rf.traininggrid <- expand.grid(.mtry=2:5) 
+
+final.model <- train(classe~., data=final.training, method="rf", trControl=Features.CVparam, tuneGrid=rf.traininggrid)
+```
+
+The accuracy of this model was 96.7% on the testing data, indicating an estimated out of sample error of about 97%, which is above the threshold of 95% needed for a less than 5% error rate (or 1 in 20 error rate) on the final testing data.
+
+```{r, cache=TRUE, echo=FALSE, results='hide'}
+pred <- predict(final.model, final.testing)
+confusionMatrix(final.testing$classe, pred)
+#Balanced Accuracy: 0.9775   0.9640   0.9243   0.9817   0.9906
+```
+
+```{r, cache=TRUE, echo=FALSE} 
+table(pred,final.testing$classe)
+```
